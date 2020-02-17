@@ -1,0 +1,745 @@
+XML DATA PROCESSING IN HIVE:
+-----------------------------
+let say we have a sample xml data 
+<rec>
+	<name>Hamza</name>
+	<age>25</age>
+</rec>
+<rec>
+	<name>Ali</name>
+	<gender>M</gender>
+</rec>
+
+if the above file is loaded into the hive table then there will be 8 records or rows, beacuse hive process
+the data line by line 
+we need to transfer each vertical xml record into horizantal xml reocrd
+you can use MapReduce or Spark for this purpose
+
+after the conversion the file will look like this
+ 
+<rec><name>Hamza</name><age>25</age></rec>
+<rec><name>Ali</name><gender>M</gender></rec>
+<rec><name>Asim</name><age>22</age><gender>M</gender></rec>
+
+this type of transformation is done before bringing the data into the hive table
+once the data is transferred you can use hive built in xml parsers to load the xml data, youu dont need
+to write any complicated code for it
+
+we then do the following steps in hive
+create database xmls;
+use xmls;
+create table raw(line string);
+load data local inpath 'xml1' into table raw;
+
+select xpath_string(line,'rec/name') from raw;
+
+RESULT:
+Hamza
+Ali
+Asim
+//xapth is built xml template praser
+
+select xpath_int(line,'rec/age') from raw;
+
+RESULT:
+25
+0
+
+create table info(name string,age int,gender string)
+row format delimited 
+fields terminated by ',';
+
+then we will load data into this table using
+insert into table info
+	select xpath_string(line,'rec/name'),
+	       xpath_int(line,'rec/age'),
+               xpath_int(line,'rec/sex'),
+	from raw;
+//////////////////////////////////////////////
+we can also work on some more complex data
+
+<rec><name><fname>Zubair</fname><lname>Ashraf></lname></name><age>23</age><contact><email><personal>abc@gmail.com</personal><offical>abc@offical.com</offical></email><phone><mobile>123</mobile><office>332</office><residence>432</residence/contact><city>Lahore</city></rec>
+
+create table xraw(line string);
+
+create table xinfo(fname string,lname string,age int,personal_email string,offical_email string,mobile string,office_phone string,residence_phone string,city string);
+
+another type of xml file you can insert is 
+<rec><name>Hamza</name><qual>BSCS</qual><qual>MSCS</qual></rec>
+<rec><name>Ali</name><qual>BSCS</qual><qual>MSCS</qual><qual>PHD</qual></rec>
+
+for this type of data use 
+select xpath(line,'rec/qual/text()') from xmlraw;
+
+now as the qual is returning a array so in the table we have to make a array 
+
+create table raw2(name string,qual array<string>);
+
+insert overwrite table raw2 
+    > select xpath_string(line,'rec/name'),
+    > xpath(line,'rec/qual/text()') from xmlraw;
+
+select name,size(qual) from raw2; 
+select * from raw2 where array_contains(qual,'BSCS');
+
+if you want to know how many people have done BSCS?
+how many times BSCS or MSCS?
+you cant do it direcctly with the arrays
+
+select explode(qual) as q from raw2;
+
+select name,myq from raw2 lateral view explode(qual) q as myq;
+
+how what if we want to calculate the total bill of the custtomer on the following data
+
+ cat > xml4
+<tr><cid>101</cid><pr>1000</pr><pr>2000</pr><pr>4000</pr></tr>
+<tr><cid>102</cid><pr>3000</pr><pr>2000</pr></tr>
+<tr><cid>101</cid><pr>5000</pr>
+
+create table sraw(line string);
+load data local inpath 'xml4' into table sraw;
+as the xpath returns the price in string form so in the schema there will be array of string
+create table sraw2(cid int, pr array<string>);
+insert into table sraw2
+    > select xpath_int(line,'tr/cid'),
+    > xpath(line,'tr/pr/text()') from sraw;
+to flaten the things we use explode function
+select explode(pr) as p from sraw2;
+from this query we can only get the price, but we cant get the customer id, but as we know that along with the UDTF 
+functions we cannot use another column so for this purpose we use lateral view	
+
+as we will flat the things so in this table schema we will use pr as int
+create table sales(cid int, pr int)
+    > row format delimited 
+    > fields terminated by ',';
+the column mypr is generated through the lateral view
+insert into table sales
+    > select cid,mypr from sraw2
+    > lateral view explode(pr) p as mypr;
+
+now atfer this we can get results 
+create table results(cid int,tot int);
+
+now to get the total bill of each customer use the following query
+insert into table results
+    > select cid,sum(pr) from sales group by cid;
+
+let us say  that your xml tag has parameters how will you handle that data
+
+samle data:
+cat > xml5
+<tr><cid>101</cid><pr id="p1">4000</pr><pr id="p7>5000</pr></tr>
+<tr><cid>102</cid><pr id="p7">5000</pr><pr id="p2">3500</pr></tr>
+
+now we will see how to extract these parameters from the tags
+
+create table xxraw(line string);
+load data local inpath 'xml5' into table xxraw;
+
+so to get the parameter under the tag use the following query
+select xpath(line,'tr/pr/@id') from xxraw;
+
+
+JSON DATA PROCESSING:
+------------------------------------------------
+
+{
+	"name:"hamza",
+	"age":25
+}
+{
+	"name":"ali",
+	"city":"Lahore"
+}
+
+just like xml if we isnert this data then there will be 8 records in hive, so we have to transfer this vertical record
+into horizontal record
+
+json1:
+
+{"name:"hamza","age":25}
+{"name":"ali","city":"Lahore"}
+
+then we will do the following
+create database jsons;
+use jsons;
+create table raw(line string);
+load data local inpath 'json1' into table raw;
+
+two functions-->to extract json fields
+1.get_json_object()-->this is udf,get a particular field
+2.json_tuple()------->this is udtf, this is also applied with lateral view like explode, get sequence of fields
+
+two way to extract json fields
+1.select get_json_object(line,'$.name') from raw;
+  to get all the columns you can use
+	select get_json_object(line,'$.name'),
+	-> get_json_object(line,'$.age'),
+	-> get_json_object(line,'$.city') from raw;
+2. x.* this indcates multiple views
+   select x.* from raw
+   lateral view json_tuple(line,'name','age','city') x as n,a,c;
+
+insert overwrite table info
+    > select x.* from raw
+    >    lateral view json_tuple(line,'name','age','city') x as n,a,c;
+
+so the difference is that in the first way you have separate function for every column but in the second way you 
+have only one function for every column
+
+......now to handle nested json objects............
+{
+	"name":"ali",
+	"age":25,
+	"wife":{
+		"name":"annie",
+		"age":22,
+		"city":"Lahore
+		}
+	"city":"Lahore"
+}
+
+convert
+
+{"name":"ali","age":25,"wife":{"name":"annie","age":22,"city":"Lahore},city":"Lahore"} 
+{"name":"asim","age":23,"wife":{"name":"ayehsa","age":20,"city":"Lahore},city":"Lahore"}
+
+load this data into table jraw
+ create table raw2(name string ,age int,wife string,city string);
+
+insert into table raw2
+> select x.* from jraw
+> lateral view json_tuple(line,'name','age','wife','city') x as n,a,w,c:
+
+after this data will still not be fully raw structured some data will be in json we will create another table
+
+create table jinfo(hname string,wname string,hage int,wage int,hcity string,wcity string,wqual string)
+> row format delimited
+> fields terminated by ',';
+
+insert into table jinfo
+> select name, get_json_object(wife,'$.name),
+> age, get_json_object(wife,'$.age),
+> city, get_json_object(wife,'$.city),
+> get_json_object(wife,'$.qual) from raw2;
+
+then select * from jinfo
+
+after working witht the nested json  now we will work with json that will have collections
+these are basically json arrays
+make a file of sample data 
+{"name":"Hamza","qual":["BBIT","MSCS","MSDS"]}
+{"name":"Ali","qual":["BBIT","MSCS"]}
+{"name":"Watto","qual":["BBA","MBA","MPhill"]}
+
+create table jsraw(line string);
+and load the above file data into this table
+
+in the jsraw2 table schema the qual is string because in json the data in left and right square bracket is consider
+as a single string 
+
+create table jsraw2(name string,qual string);
+then insert data into this table
+insert into table jsraw2 select x.* from jsraw lateral view json_tuple(line,'name','qual') x as n,q;
+data will be in this shape:
+Hamza	["BBIT","MSCS","MSDS"]
+Ali	["BBIT","MSCS"]
+Watto	["BBA","MBA","MPhill"]
+
+keep in mind that the second column is stored as a single string and not a array
+but the comma separator tells us that their are three qualification
+now to get the array we will split,but as the "" are part of our string then it will mask it with \
+select split(qual,',') from jsraw2; 
+after spliting the result is actually a array and not a string 
+RESULT:
+["[\"BBIT\"","\"MSCS\"","\"MSDS\"]"]
+["[\"BBIT\"","\"MSCS\"]"]
+["[\"BBA\"","\"MBA\"","\"MPhill\"]"]
+we will store this array into another table thats why in the schema of raw3 the qualification is array
+create table raw3(name string,qual array<string>);
+then insert the data 
+insert into table raw3 select name,split(qual,',') from jsraw2;
+after loading the data into this table it is still not in pure form and we want to flatten,for this purpose we will use
+explode
+the shadp of data after using explode will be like this
+select explode(qual) as q from raw3;
+RESULT:
+["BBIT"
+"MSCS"
+"MSDS"]
+["BBIT"
+"MSCS"]
+["BBA"
+"MBA"
+"MPhill"]
+now we will create another table 
+create table raw4(name string,qual string);
+and then insert the data as 
+insert overwrite table raw4 select name,myq from raw3 lateral view explode(qual) q as myq;
+RESULT:
+Hamza	["BBIT"
+Hamza	"MSCS"
+Hamza	"MSDS"]
+Ali	["BBIT"
+Ali	"MSCS"]
+Watto	["BBA"
+Watto	"MBA"
+Watto	"MPhill"]
+after inserting you can still see that some unnecessary data is their
+now if you split this data you will get pure qualification in array as second element because when we used explode
+let say for hamza,if we use "" as delimitore then the first element we get is below
+["[\"BBIT\"","\"MSCS\"","\"MSDS\"]"] vedio(14:00)
+Hamza	["BBIT"------------------->"[" BBIT 
+Hamza	"MSCS"-------------------->""  MSCS
+Hamza	"MSDS"] ------------------>""  MSDS "]"
+now if we use "" as delimitor see the result
+select split(qual,'""') from raw4;
+you get array 
+["[\"BBIT\""]
+["\"MSCS\""]
+["\"MSDS\"]"]
+["[\"BBIT\""]
+["\"MSCS\"]"]
+["[\"BBA\""]
+["\"MBA\""]
+["\"MPhill\"]"]
+now from this array we can see that the second element is the qualification and in hive we can get it through index
+select split(qual,'"')[1] from raw4;
+BBIT
+MSCS
+MSDS
+BBIT
+MSCS
+BBA
+MBA
+MPhill
+create table jsinfo like raw4;
+insert into table jsinfo select name,split(qual,'"')[1] from raw4;
+select * from jsinfo;
+OK
+Hamza	BBIT
+Hamza	MSCS
+Hamza	MSDS
+Ali	BBIT
+Ali	MSCS
+Watto	BBA
+Watto	MBA
+Watto	MPhill
+now see the transformation of data
+Stage1:
+....................................................
+select * from jsraw;
+OK
+{"name":"Hamza","qual":["BBIT","MSCS","MSDS"]}
+{"name":"Ali","qual":["BBIT","MSCS"]}
+{"name":"Watto","qual":["BBA","MBA","MPhill"]}
+.....................................................
+Stage2:
+select * from jsraw2;
+OK
+Hamza	["BBIT","MSCS","MSDS"]
+Ali	["BBIT","MSCS"]
+Watto	["BBA","MBA","MPhill"]
+.....................................................
+Stage3:
+select * from raw3;
+OK
+Hamza	["[\"BBIT\"","\"MSCS\"","\"MSDS\"]"]
+Ali	["[\"BBIT\"","\"MSCS\"]"]
+Watto	["[\"BBA\"","\"MBA\"","\"MPhill\"]"]
+.....................................................
+Stage4:
+select * from raw4;
+OK
+Hamza	["BBIT"
+Hamza	"MSCS"
+Hamza	"MSDS"]
+Ali	["BBIT"
+Ali	"MSCS"]
+Watto	["BBA"
+Watto	"MBA"
+Watto	"MPhill"]
+......................................................
+Stage5:
+select * from jsinfo;
+OK
+Hamza	BBIT
+Hamza	MSCS
+Hamza	MSDS
+Ali	BBIT
+Ali	MSCS
+Watto	BBA
+Watto	MBA
+Watto	MPhill
+......................................................
+
+URL DATA PROCESSING:
+-----------------------------------------------------------------------------------------------------------------------
+when user visit from one page to another page moslty web logs are created and those web log contains urls
+basically url are off two types
+1.source urls
+2.target urls
+hive provides you with predefined url parsers to extract information from them
+url has three parts
+<host>/<path>?<query string>
+file name:urls
+http://training.com/bigdata/hadoop?id=101&name=Hamzai&age=23&city=hyd
+http://training.com/bigdata/spark?id=102&name=Ali&gender=f&city=lhr
+http://training.com/bigdata/spark?id=103&name=Asim&age=33&gender=f
+http://training.com/bigdata/spark?id=101&name=Qumail&age=23&gender=m
+
+from these we can exrtact data on which product page to advertise on the base of customer visited as we can see from the
+the urls that spark is the most visited product
+ek or swal uth skta ha k jese kis age k log product ko visit kr rhy hein us hisab se adds lgae ja skte hein
+jis gender k log visit kr rhy hein male ya female uska add bhi lgaya ja skta ha 
+
+create database urls;
+create table raw(line string);
+load data local inpath 'urls' into table raw;
+
+now we will first extract the hostname from the url
+select parse_url(line,'HOST') from raw;
+RESULT:
+training.com
+training.com
+training.com
+training.com
+
+select parse_url(line,'PATH') from raw;
+RESULT:
+/bigdata/hadoop
+/bigdata/spark
+/bigdata/spark
+/bigdata/spark
+
+select parse_url(line,'QUERY') from raw;
+RESULT:
+OK
+id=101&name=Hamzai&age=23&city=hyd
+id=102&name=Ali&gender=f&city=lhr
+id=103&name=Asim&age=33&gender=f
+id=101&name=Qumail&age=23&gender=m
+
+
+select parse_url(line,'HOST'),
+    > parse_url(line,'PATH'),
+    > parse_url(line,'QUERY') from raw;
+OK
+training.com	/bigdata/hadoop	id=101&name=Hamzai&age=23&city=hyd
+training.com	/bigdata/spark	id=102&name=Ali&gender=f&city=lhr
+training.com	/bigdata/spark	id=103&name=Asim&age=33&gender=f
+training.com	/bigdata/spark	id=101&name=Qumail&age=23&gender=m
+ 
+if you dont want to use parse_url again and again you can use the following 
+select x.* from raw
+>lateral view parse_url_tuple(line,'HOST','PATH','QUERY') x as h,p,q;
+
+then put all these things in a single table
+create table raw2(host string,path string,query string);
+then
+insert into table raw2
+>select x.* from raw
+>lateral view parse_url_tuple(line,'HOST','PATH','QUERY') x as h,p,q;
+
+RESULT:
+training.com	/bigdata/hadoop	id=101&name=Hamzai&age=23&city=hyd
+training.com	/bigdata/spark	id=102&name=Ali&gender=f&city=lhr
+training.com	/bigdata/spark	id=103&name=Asim&age=33&gender=f
+training.com	/bigdata/spark	id=101&name=Qumail&age=23&gender=m
+
+now i want to get my product from the path /bigdata/spark and my clue to separate both is delimitor /, in this bigdata is 
+the category and hadoop,spark are the prodcuts and we can put them in a single array so the data type for it is array 
+
+id=101&name=Hamzai&age=23&city=hyd if we carefully observe this then we can see that it is delimited by & and it is a
+key value pair and data type for key value pair in hive is map
+
+then for the next stage of transformation we are going to create another table
+create table raw3(host string,path array<string>,qmap map<string,string>);
+
+there is a function in hive to convert string into map str_to_map(attribute,'delimitor','dekimitor for key value')
+insert into table raw3
+select host, split(path,'/'), str_to_map(query,'&','=') from raw2;
+
+RESULT:
+training.com	["","bigdata","hadoop"]	{"id":"101","name":"Hamzai","age":"23","city":"hyd"}
+training.com	["","bigdata","spark"]	{"id":"102","name":"Ali","gender":"f","city":"lhr"}
+training.com	["","bigdata","spark"]	{"id":"103","name":"Asim","age":"33","gender":"f"}
+training.com	["","bigdata","spark"]	{"id":"101","name":"Qumail","age":"23","gender":"m"}
+
+
+as we know that we access array with index and key value pair with key
+now create another table with schema
+create table info(host string,category string,course string,id int,name string,age int,gender string,city string);
+
+as our course and category is in path attribute we will acces it like path[1] and path[2]
+and if you pass the key you will get the value qmap['id']
+
+insert overwrite table info
+    > select host,path[1],path[2],
+    > qmap['id'],qmap['name'],qmap['age'],qmap['gender'],qmap['city'] from raw3;
+
+training.com	bigdata	hadoop	101	Hamzai	23	NULL	hyd
+training.com	bigdata	spark	102	Ali	NULL	f	lhr
+training.com	bigdata	spark	103	Asim	33	f	NULL
+training.com	bigdata	spark	101	Qumail	23	m	NULL
+
+now apply this query for analysis
+select gender,count(*) as cnt from info
+group by gender
+order by cnt desc limit 1;
+this query will tell which gender is watching most 
+RESULT: f	2
+
+HIVE - UDFS:
+--------------------------------------------------------------------------------------------------------------
+the advantage of udfs is that we can develope custom functionalities, because some functions are not avaliable in hive
+
+the hive udfs can be developed using some languages such as java,python,c++,ruby,R
+
+we will discuss java based udf development
+
+to make a java class a udf class you will use extends UDF key word, the class will get udf functionality
+public class MyUDF extends UDF{
+}
+the UDF logic should be kept in evaluate() function.
+	evaluate is executed for n times where n is,number of rows fetched by select statement.This menas that let say
+	our table has 500 rows but in our select statement we select only 10 rows then evaluate is executed for 10 times
+the basic structure of your UDF will look like this
+
+public class MyUDF extends UDF{
+	public String evaluate(String value)
+		throws IOExceptiom
+	 {
+		logic here
+	 }
+}
+
+Steps in UDF:
+
+1.Develope UDF class.
+2.Export into jar file.
+3.this jar file is not known to hive you have to register this file into hive.
+4.create temporary function 
+5.call the function
+
+let say have a sample table
+
+info
+.................................
+name   age  city
+.................................
+haMza  23   Lahore
+aLi    25   Lahore
+.
+.
+.................................
+if you observe the name column of the table you will see that the same has some letter in upper case and some letter
+in lower case and i want to transform this as first letter into upper case and the remaining character into the lower
+case
+So now for this we are going to develope UDF
+In the function argument hive is not caputring the values into java data type,hive use mapreduce data types these data
+types are called write ables the String equalvnent writeable is Text
+
+STEP1:
+FirstUpper.java
+..................................
+package hive.analytics;
+.....
+.....
+public classs FirstUpper extends UDF{
+	public Text evaluate(Text value){
+	  //if we use mapreduce data types we cant apply java functionality to it so we have to convert them
+	  String name = value.toString().trim();
+	  //now separating first character
+	  String firstChar = name.substring(0,1).toUpperCase();
+	  //converting remaining characters into lower case
+	  String RemChar = name.substring(1).toLowerCase();
+	  //then we will concat them
+	  name = firstChar+RemChar;
+	  //as we will use this it in hive and also return type of our function is Text we will do this
+	  return new Text(name);
+	}
+}
+
+STEP2;
+exxport into jar file.
+suppose our jar file is in the following path
+/home/hamza/Documents/hiveapp.jar
+
+STEP3:
+register jar file into hive
+hive> add jar <path of jar file>;
+
+STEP4;
+create temporary function for udf class.
+
+hive> create temporary function fupper as 'hive.analytics.FirstUpper';
+
+we need to keep this in mind that these are temporary function and once you come out of the hive shell these function
+will be lost, you have to follow steo 3 and 4 to use them again,but if you use 100 functions in a day and you need them
+next day also what will you do then you will write script and will keep all these functions in a single script file
+
+STEP5:
+calling the function
+
+hive> create table info(name string,age int,city stirng)
+      row format delimited
+      fields terminated by ',';
+as you can see in this step we didnt call the function
+
+hive> load data local inpath 'info.txt' into table info;
+
+--now we are going to call the function
+
+hive> insert overwrite table info
+      select fupper(name),age,city
+      from info;
+.......................................................
+
+NOW we will work with another example
+...............................................
+emp
+..........................................
+id    name    sal    sex    dno
+..........................................
+.
+.
+..........................................
+now from the salary column we want to constuct grades like A,B and so on
+if sal>=70000---->A
+   sal>=50000 and <70000---->B
+   sal>=30000 and <50000---->C
+   sal>=30000---->D
+now suppose the vlaues of sex is as M,F and we want to transform it as 
+M--->Male
+F--->Female
+and also let say we want to transfer the department numbers into names as
+11---->Marketing
+12---->Hr
+13---->Finance
+>13--->Others
+
+for this purpose you have to write 3 separate UDF functions
+
+Gender.java
+...................
+package hive.analytics
+...
+...
+public class Gender extends UDF{
+	public Text evaluate(Text value)
+	throws IOException
+	{
+	  string sex = value.toString().toUpperCase();
+	  if(sex.matches("M"))
+		sex="Male";
+	  else
+		sex="Female";
+	  return new Text(sex);
+	}
+}
+.........................
+Grades.java
+.........................
+package hive.analytics;
+....
+....
+public class Grades extends UDF{
+	public Text evaluate(IntWriteable value)
+	throws IOException
+	{
+	  //first convert into java int
+	  int sal = value.get();
+	  String grade;
+	  if(sal>=70000)
+		grade="A";
+	  else if(sal>=50000)
+		grade="B";
+	  else if(sal>=30000)
+		grade="C";
+	  else grade="D";
+	  return new Text(grade);
+	}
+}
+.................
+Depts.java
+.........................
+package hive.analytics;
+....
+....
+public class Depts extends UDF{
+	public Text evaluate(IntWriteable value)
+	throws IOException
+	{
+	  int dno = value.get();
+	  String dname;
+	  switch(dno){
+		case 11:
+			dname="Marketing";
+			break;
+		case 12:
+			dname="HR";
+			break;
+		case 13:
+			dname="Finance";
+			break;
+		default:
+			dname="Others";
+	   }
+	}
+}
+.................................
+STEP2:
+export all the classes into the jar file.
+/home/hamza/Documents/hiveapp.jar
+
+STEP3:
+register jar in hive.
+hive> add jar <path of jar file>
+
+STEP4:
+create temporary function for each udf class.
+i)
+hive> create temporary function gend as 'hive.analytics.Gender';
+ii)
+hive> create temporary function grade as 'hive.analytics.Grades';
+iii)
+hive> create temporary function dept as 'hive.analytics.Depts
+
+STEP5:
+calling functions
+hive> create table emp(id int,name string,sal int,sex string,dno int) row format delimited fields terminated by ',';
+
+hive> load data local inpath 'emp' into table emp;
+
+---calling functions
+hive> create table emp2(id int,name string,sak int,grade string,sex string,dname string)
+      row format delimited 
+      fields terminated by ',';
+
+hive> insert into table emp2
+      select id,fupper(name),sal,grade(sal),gend(sex),dept(dno)
+      from emp;
+
+data for emp
+101,vino,26000,m,11
+102,ayesha,2500,f,11
+103,anas,13000,m,13
+104,resham,,8000,f,12
+105,zubi,6000,m,13
+101,ali,10000,f,12
+201,aa,90000,m,13
+202,bb,99999,f,14
+203,cc,11111,m,12
+204,dd,77777,f,14
+205,ee,66666,m,15
+206,ff,55555,m,14
+207,gg,44444,f,11
+208,hhh,33333,m,11
+
+create database udfs;
+ create table emp(id int,name string,sal int,gender string,dno int)
+    > row format delimited
+    > fields terminated by ',';
+load data local inpath 'emp' into table emp;
